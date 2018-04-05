@@ -11,6 +11,8 @@ public class EventLogData {
 	private int clientPort;
 	private String serviceName = "";
 	private String processName = "";
+	private String shredName = "";
+	private String objectName = "";
 	private long timeCnt;
 	private short isGolden=0;
 	private Alert alertLevel;
@@ -74,5 +76,17 @@ public class EventLogData {
 	}
 	public void setAlertLevel(Alert alertLevel){
 		this.alertLevel=alertLevel;
+	}
+	public void setSharedName(String shredName){
+		this.shredName=shredName;
+	}
+	public String getSharedName(){
+		return this.shredName;
+	}
+	public void setObjectName(String objectName){
+		this.objectName=objectName;
+	}
+	public String getObjectName(){
+		return this.objectName;
 	}
 }

@@ -64,8 +64,8 @@ public class AuthLogParser {
 	private int detectedNum=0;
 
 	// Parameters for calculate number of train data(not used now)
-	// private static float TRAIN_PERCENTAGE=0.75f;
-	// private int currentTrainNum=0;
+	private static float TRAIN_PERCENTAGE=0.75f;
+	private int currentTrainNum=0;
 
 	private void readCSV(String filename) {
 
@@ -80,6 +80,8 @@ public class AuthLogParser {
 			String clientAddress = "";
 			String serviceName = "";
 			String processName = "";
+			String shredName = "";
+			String objectName = "";
 			boolean isTargetEvent = false;
 
 			// splitする際の上限回数
@@ -176,21 +178,27 @@ public class AuthLogParser {
 								// 5140は共有名の情報を取得してから格納する
 								log.put(accountName, evSet);
 							}
+						} else if (elem.contains("オブジェクト名:")) {
+							objectName = parseElement(elem, ":", 2).toLowerCase();
 						} else if ((elem.contains("プロセス名:") || elem.contains("Process Name:"))) {
 							// プロセス名は":"が含まれることがあることを考慮
 							processName = parseElement(elem, ":", 2).toLowerCase();
-							evSet.add(new EventLogData(date, clientAddress, accountName, eventID, clientPort,
-									serviceName, processName, timeCnt));
+							EventLogData ev=new EventLogData(date, clientAddress, accountName, eventID, clientPort,
+									serviceName, processName, timeCnt);
+							ev.setObjectName(objectName);
+							evSet.add(ev);
 							log.put(accountName, evSet);
 							processName = "";
+							objectName = "";
 						} else if (elem.contains("共有名:")) {
-							// カラムを増やしたくないので、プロセス名に入れる
-							processName = parseElement(elem, ":", 2).toLowerCase();
-							evSet.add(new EventLogData(date, clientAddress, accountName, eventID, clientPort,
-									serviceName, processName, timeCnt));
+							EventLogData ev=new EventLogData(date, clientAddress, accountName, eventID, clientPort,
+									serviceName, processName, timeCnt);
+							shredName = parseElement(elem, ":", 2).toLowerCase();
+							ev.setSharedName(shredName);
+							evSet.add(ev);
 							log.put(accountName, evSet);
-							processName = "";
-						}
+							shredName = "";
+						} 
 					}
 					/*
 					else {
@@ -234,7 +242,7 @@ public class AuthLogParser {
 			bw = new BufferedWriter(filewriter);
 			pw = new PrintWriter(bw);
 			// pw.println("date_utime,eventID,account,ip,port,service,process,timeCnt,target");
-			pw.println("date,date_utime,eventID,account,ip,service,process,timeCnt,target,alert");
+			pw.println("date,date_utime,eventID,account,ip,service,process,objectname,sharedname,timeCnt,target,alert");
 
 			// result of merged log based on timeCnt
 			filewriter2 = new FileWriter(outputDirName + "/" + "mergedlog.csv" + "", true);
@@ -293,7 +301,7 @@ public class AuthLogParser {
 					timeBasedlog.put(ev.getTimeCnt(), evSet);
 				}
 				// Calculate number of train data
-				// this.trainNum=Math.round(this.logCnt*this.TRAIN_PERCENTAGE);
+				 this.trainNum=Math.round(this.logCnt*this.TRAIN_PERCENTAGE);
 
 				// 結果をファイルに出力する
 				outputLogs(timeBasedlog, accountName);
@@ -365,7 +373,7 @@ public class AuthLogParser {
 			for (EventLogData ev : evS) {
 				if (5140 == ev.getEventID()) {
 					// 管理共有が使用されている
-					if (ev.getProcessName().contains("\\c$")) {
+					if (ev.getSharedName().contains("\\c$")) {
 						isGolden = 1;
 						ev.setIsGolden(isGolden);
 						this.logCnt--;
@@ -471,11 +479,20 @@ public class AuthLogParser {
 				}
 				if (1 == ev.isGolden()) {
 					target = "outlier";
-				} else if (logTime < this.attackStartTime) {
+				} 
+				/*
+				else if (logTime < this.attackStartTime) {
 					// 攻撃開始前は学習用データとする
 					target = "train";
 				} else {
 					// 攻撃開始前はテストデータとする
+					target = "test";
+				}
+				*/
+				else if (currentTrainNum2 <= trainNum) {
+					target = "train";
+					currentTrainNum2++;
+				} else {
 					target = "test";
 				}
 				// UNIX Timeの計算
@@ -487,7 +504,8 @@ public class AuthLogParser {
 				}
 				pw.println(ev.getDate() + "," + time + "," + ev.getEventID() + "," + accountName + ","
 						+ ev.getClientAddress() + "," + ev.getServiceName() + "," + ev.getProcessName() + ","
-						+ ev.getTimeCnt() + "," + target+ "," + ev.getAlertLevel());
+						+ ev.getObjectName() + "," +  ev.getSharedName() + "," + + ev.getTimeCnt() + "," + 
+						target+ "," + ev.getAlertLevel());
 			}
 		}
 
