@@ -22,25 +22,45 @@ public class AuthLogParser {
 
 	// Initial value for timeCnt
 	private static short TIME_CNT = Short.MAX_VALUE;
-	
+
 	// Command execution rate for alert
-	private static double ALERT_SEVIRE=0.7;
-	private static double ALERT_WARNING=0.3;
+	private static double ALERT_SEVIRE = 0.85;
+	private static double ALERT_WARNING = 0.2;
+
+	// process name of PSEXESVC
+	private static String PSEXESVC = "psexesvc";
+
+	private static int EVENT_PROCESS = 4688;
+	private static int EVENT_PRIV = 4672;
+	private static int EVENT_PRIV_SERVICE = 4673;
+	private static int EVENT_PRIV_OPE = 4674;
+	private static int EVENT_TGT = 4768;
+	private static int EVENT_ST = 4769;
+	private static int EVENT_SHARE = 5140;
+
 	// Alert Level
-	protected enum Alert{
-		SEVERE,
-		WARNING,
-		NOTICE,
-		NONE
+	protected enum Alert {
+		SEVERE, WARNING, NOTICE, NONE
 	}
+
+	// Alert type
+	protected enum AlertType {
+		NoTGT, MALCMD, ADMINSHARE, PSEXEC
+	}
+
+	// Alert type and message
+	private Map<AlertType, String> alert = null;
 
 	// Suspicious command list
 	private List<String> suspiciousCmd = null;
 
-	// account name for detection(Domain Admin Privilege accounts)
+	// account name for detection
 	private Set<String> accounts = new LinkedHashSet<String>();
 	
-	private int detecctTargetcmdCnt=0;
+	// account name for detection(Domain Admin Privilege accounts)
+	private Set<String> adminAccounts = new LinkedHashSet<String>();
+
+	private int detecctTargetcmdCnt = 0;
 
 	private FileWriter filewriter = null;
 	private BufferedWriter bw = null;
@@ -56,16 +76,17 @@ public class AuthLogParser {
 	private static SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
 
 	private int trainNum = 0;
-	private int currentTrainNum2 = 0;
+	// current number of train data
+	private int currentTrainNum = 0;
 	private long id = 0;
 	private static long attackStartTime = 0;
 	private int logCnt = 0;
-	private int eventNum=0;
-	private int detectedNum=0;
+	private int detectedEventNum = 0;
+	private int dataNum=0;
+	private int infectedNum=0;
 
-	// Parameters for calculate number of train data(not used now)
-	private static float TRAIN_PERCENTAGE=0.75f;
-	private int currentTrainNum=0;
+	// Parameters for calculate number of train data
+	private static float TRAIN_PERCENTAGE = 0.75f;
 
 	private void readCSV(String filename) {
 
@@ -101,17 +122,18 @@ public class AuthLogParser {
 					if (line.contains("Microsoft-Windows-Security-Auditing,")) {
 						date = data[1];
 						eventID = Integer.parseInt(data[3]);
-						if (line.contains("4769") || line.contains("4768") || line.contains("4674")
-								|| line.contains("4672") ||  line.contains("5140")
-								|| line.contains("4673") || line.contains("4688")) {
-							// Event for investigation
-							eventNum++;
+						if (line.contains(String.valueOf(EVENT_TGT)) || line.contains(String.valueOf(EVENT_ST))
+								|| line.contains(String.valueOf(EVENT_PRIV_OPE))
+								|| line.contains(String.valueOf(EVENT_PRIV))
+								|| line.contains(String.valueOf(EVENT_PRIV_SERVICE))
+								|| line.contains(String.valueOf(EVENT_PROCESS))
+								|| line.contains(String.valueOf(EVENT_SHARE))) {
 							isTargetEvent = true;
 							try {
 								// Get date
 								logDate = sdf.parse(date);
-								if (4769 == eventID && null == baseDate) {
-									// 4769 を起点として同じ時間帯に出ているログを調べる
+								if (EVENT_ST == eventID && null == baseDate) {
+									// this.EVENT_ST を起点として同じ時間帯に出ているログを調べる
 									baseDate = sdf.parse(date);
 									timeCnt--;
 								} else if (null != baseDate) {
@@ -129,7 +151,7 @@ public class AuthLogParser {
 							} catch (ParseException e) {
 								e.printStackTrace();
 							}
-						} else{
+						} else {
 							isTargetEvent = false;
 						}
 					} else if (isTargetEvent) {
@@ -145,13 +167,14 @@ public class AuthLogParser {
 								} else {
 									evSet = log.get(accountName);
 								}
-								if (4672 == eventID) {
-									// 4672はこれ以上情報がないので、アカウント名だけ取得
-									evSet.add(new EventLogData(date, "", accountName, eventID, 0, "", "", timeCnt));
-									log.put(accountName, evSet);
-									// 管理者アカウントリストに入れる
+									if (EVENT_PRIV == eventID) {
+										// 4672はこれ以上情報がないので、アカウント名だけ取得し、管理者アカウントリストに入れる
+										accounts.add(accountName);
+										adminAccounts.add(accountName);
+										continue;
+									}else {
+									// extract all users
 									accounts.add(accountName);
-									continue;
 								}
 							}
 
@@ -161,9 +184,6 @@ public class AuthLogParser {
 								|| elem.contains("ソース ネットワーク アドレス:") || elem.contains("送信元アドレス:")) {
 							elem = elem.replaceAll("::ffff:", "");
 							clientAddress = parseElement(elem, ":", limit);
-							if (clientAddress.isEmpty()) {
-								clientAddress = "0";
-							}
 
 						} else if ((elem.contains("クライアント ポート:") || elem.contains("Client Port:")
 								|| elem.contains("ソース ポート:"))) {
@@ -174,7 +194,7 @@ public class AuthLogParser {
 							}
 							evSet.add(new EventLogData(date, clientAddress, accountName, eventID, clientPort,
 									serviceName, processName, timeCnt));
-							if (5140 != eventID) {
+							if (EVENT_SHARE != eventID) {
 								// 5140は共有名の情報を取得してから格納する
 								log.put(accountName, evSet);
 							}
@@ -183,7 +203,9 @@ public class AuthLogParser {
 						} else if ((elem.contains("プロセス名:") || elem.contains("Process Name:"))) {
 							// プロセス名は":"が含まれることがあることを考慮
 							processName = parseElement(elem, ":", 2).toLowerCase();
-							EventLogData ev=new EventLogData(date, clientAddress, accountName, eventID, clientPort,
+							// 認証要求元は記録されない
+							clientAddress = "";
+							EventLogData ev = new EventLogData(date, clientAddress, accountName, eventID, clientPort,
 									serviceName, processName, timeCnt);
 							ev.setObjectName(objectName);
 							evSet.add(ev);
@@ -191,20 +213,15 @@ public class AuthLogParser {
 							processName = "";
 							objectName = "";
 						} else if (elem.contains("共有名:")) {
-							EventLogData ev=new EventLogData(date, clientAddress, accountName, eventID, clientPort,
+							EventLogData ev = new EventLogData(date, clientAddress, accountName, eventID, clientPort,
 									serviceName, processName, timeCnt);
 							shredName = parseElement(elem, ":", 2).toLowerCase();
 							ev.setSharedName(shredName);
 							evSet.add(ev);
 							log.put(accountName, evSet);
 							shredName = "";
-						} 
+						}
 					}
-					/*
-					else {
-						isTargetEvent = false;
-					}
-					*/
 				}
 			}
 			br.close();
@@ -229,9 +246,6 @@ public class AuthLogParser {
 		if (value.isEmpty()) {
 			value = "";
 		}
-		/*
-		 * else if (value.equals("-")) { value = ""; }
-		 */
 		return value;
 	}
 
@@ -241,30 +255,30 @@ public class AuthLogParser {
 			filewriter = new FileWriter(outputFileName, true);
 			bw = new BufferedWriter(filewriter);
 			pw = new PrintWriter(bw);
-			// pw.println("date_utime,eventID,account,ip,port,service,process,timeCnt,target");
-			pw.println("date,date_utime,eventID,account,ip,service,process,objectname,sharedname,timeCnt,target,alert");
+			pw.println("date,eventID,account,ip,service,process,objectname,sharedname,target,alerttype,alertlevel");
 
 			// result of merged log based on timeCnt
 			filewriter2 = new FileWriter(outputDirName + "/" + "mergedlog.csv" + "", true);
 			bw2 = new BufferedWriter(filewriter2);
 			pw2 = new PrintWriter(bw2);
-			// pw.println("date,date_utime,eventID,account,ip,port,service,process,timeCnt,target");
 			pw2.println("eventID,account,ip,port,service,process,target");
 
 			// for time series analysis
 			filewriter3 = new FileWriter(outputDirName + "/" + "timeserieslog.csv" + "", true);
 			bw3 = new BufferedWriter(filewriter3);
 			pw3 = new PrintWriter(bw3);
-			// pw.println("date_utime,eventID,account,ip,port,service,process,timeCnt,target");
 			pw3.println("id,eventID_p,account_p,ip_p,service_p,process_p,"
 					+ "eventID_c,account_c,ip_c,service_c,process_c,target");
+			
+			System.out.println("Infected accounts and computers:");
 
 			ArrayList<EventLogData> list = null;
-			
+
 			// アカウントごとに処理する
-			// 特権を使っているアカウントのみ抽出
-			for(String accountName :accounts) {
+			for (String accountName : accounts) {
 				LinkedHashSet<EventLogData> evS = log.get(accountName);
+				// ソース IPが出ないイベントに、ソースIPをセットする
+				setClientAddress(evS);
 
 				// クライアントアドレス毎にログを保持するためのリスト(キー：クライアントアドレス)
 				Map<String, LinkedHashSet> kerlog = new LinkedHashMap<String, LinkedHashSet>();
@@ -275,8 +289,9 @@ public class AuthLogParser {
 				// さらにクライアントアドレスごとに分類し、GTが使われている可能性があるかを判定する
 				for (EventLogData ev : evS) {
 					LinkedHashSet<EventLogData> evSet;
-					if (null != kerlog.get(ev.getClientAddress())) {
-						evSet = kerlog.get(ev.getClientAddress());
+					String clientAddress=ev.getClientAddress();
+					if (null != kerlog.get(clientAddress)) {
+						evSet = kerlog.get(clientAddress);
 					} else {
 						evSet = new LinkedHashSet<EventLogData>();
 					}
@@ -284,9 +299,19 @@ public class AuthLogParser {
 					kerlog.put(ev.getClientAddress(), evSet);
 					this.logCnt++;
 				}
+				
+				for (Iterator it = kerlog.entrySet().iterator(); it.hasNext();) {
+						Map.Entry<String, LinkedHashSet> entry = (Map.Entry<String, LinkedHashSet>) it.next();
+						String computer=entry.getKey();
+						if(!accountName.isEmpty() && !computer.isEmpty()) {
+							this.dataNum++;
+							//System.out.println("Account: "+accountName+", Computer: "+computer);
+						}
+				}
 				// GTが使われているか判定
-				isGoldenUsed(kerlog);
-
+				if(adminAccounts.contains(accountName)){
+					isGoldenUsed(kerlog,accountName);
+				}
 				// 同じ時間帯のログごとに処理
 				list = new ArrayList<EventLogData>(evS);
 				Collections.reverse(list);
@@ -301,14 +326,14 @@ public class AuthLogParser {
 					timeBasedlog.put(ev.getTimeCnt(), evSet);
 				}
 				// Calculate number of train data
-				 this.trainNum=Math.round(this.logCnt*this.TRAIN_PERCENTAGE);
+				this.trainNum = Math.round(this.logCnt * this.TRAIN_PERCENTAGE);
 
 				// 結果をファイルに出力する
 				outputLogs(timeBasedlog, accountName);
 				// time series機械学習用のログを出力する
-				//outputTimeSeriseLogs(timeBasedlog, accountName);
+				// outputTimeSeriseLogs(timeBasedlog, accountName);
 				// 同じ時間帯のログをマージする
-				//mergeLogs(timeBasedlog, accountName);
+				// mergeLogs(timeBasedlog, accountName);
 			}
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -326,48 +351,38 @@ public class AuthLogParser {
 		}
 	}
 
-	private void isGoldenUsed(Map<String, LinkedHashSet> kerlog) {
+	private void isGoldenUsed(Map<String, LinkedHashSet> kerlog, String accountName) {
 		// kerlogは端末毎に分類されたログ
 		for (Iterator it = kerlog.entrySet().iterator(); it.hasNext();) {
 			boolean isTGTEvent = false;
 			boolean isSTEvent = false;
 			short isGolden = 0;
 			Map.Entry<String, LinkedHashSet> entry = (Map.Entry<String, LinkedHashSet>) it.next();
-			//System.out.println(entry.getKey());
+			String computer=entry.getKey();
 			LinkedHashSet<EventLogData> evS = (LinkedHashSet<EventLogData>) entry.getValue();
 			for (EventLogData ev : evS) {
+				// 同じアカウント・端末・時間帯のログに同じtimeCntを割り当てる
+				// アカウント・端末を連結させた文字列のハッシュコードとタイムカウントを加算する
+				long timeCnt = (ev.getAccountName() + ev.getClientAddress()).hashCode() + ev.getTimeCnt();
+				ev.settimeCnt(timeCnt);
 				int eventID = ev.getEventID();
-				// 4768/4769が記録されているかを調べる
+				// 4768/479が記録されているかを調べる
 				if (eventID == 4768) {
 					isTGTEvent = true;
-				} else if (eventID == 4769) {
+				} else if (eventID == EVENT_ST) {
 					isSTEvent = true;
 				}
 			}
 			if (!isTGTEvent && isSTEvent) {
 				// 4768が記録されていないのに、4769が記録されている
 				isGolden = 1;
-				long timeCnt;
-				Set<Long> attackTimeCnt = new HashSet<Long>();
+				System.out.println("Account: "+accountName+", Computer: "+computer);
 				for (EventLogData ev : evS) {
-					if (4769 == ev.getEventID()) {
+					if (EVENT_ST == ev.getEventID()) {
 						ev.setIsGolden(isGolden);
-						this.logCnt--;
-						this.detectedNum++;
-						// 同じ時間帯のログを抽出する
-						attackTimeCnt.add(ev.getTimeCnt());
+						ev.setAlertType(AlertType.NoTGT);
 					}
 				}
-				/*
-				for (EventLogData ev : evS) {
-					if (attackTimeCnt.contains(ev.getTimeCnt())) {
-						// 同じ時間帯のログは攻撃によって記録された可能性が高い
-						ev.setIsGolden(isGolden);
-						this.logCnt--;
-						this.detectedNum++;
-					}
-				}
-				*/
 			}
 			Set<String> commands = new LinkedHashSet<String>();
 			for (EventLogData ev : evS) {
@@ -376,39 +391,54 @@ public class AuthLogParser {
 					if (ev.getSharedName().contains("\\c$")) {
 						isGolden = 1;
 						ev.setIsGolden(isGolden);
-						this.logCnt--;
-						this.detectedNum++;
+						ev.setAlertType(AlertType.ADMINSHARE);
 					}
-				} else if (4673 == ev.getEventID()||4674 == ev.getEventID()||4688 == ev.getEventID()) {
+				} else if (EVENT_PRIV_SERVICE == ev.getEventID() || EVENT_PRIV_OPE == ev.getEventID() 
+						|| EVENT_PROCESS == ev.getEventID()) {
 					// 攻撃者がよく実行するコマンドを実行している
 					for (String cmd : suspiciousCmd) {
-						if (ev.getProcessName().contains(cmd)) {
+						String command[] = ev.getProcessName().split("\\\\");
+						String commandName = "";
+						if (null != command) {
+							commandName = command[command.length - 1];
+						}
+						if (commandName.equals(cmd)) {
 							isGolden = 1;
 							ev.setIsGolden(isGolden);
-							this.logCnt--;
-							this.detectedNum++;
+							ev.setAlertType(AlertType.MALCMD);
 							commands.add(ev.getProcessName());
+						}
+						if (EVENT_PRIV_OPE == ev.getEventID()) {
+							// psexecが実行されている
+							if (ev.getObjectName().contains(this.PSEXESVC)) {
+								isGolden = 1;
+								ev.setIsGolden(isGolden);
+								ev.setAlertType(AlertType.PSEXEC);
+							}
 						}
 					}
 				}
-				// 同じアカウント・端末・時間帯のログに同じtimeCntを割り当てる
-				// アカウント・端末を連結させた文字列のハッシュコードとタイムカウントを加算する
-				long timeCnt = (ev.getAccountName() + ev.getClientAddress()).hashCode() + ev.getTimeCnt();
-				ev.settimeCnt(timeCnt);
 			}
 			// 実行された不審なコマンドの種類数
-			int detecctcmdCnt=commands.size();
-			double commandExecuterate=(double)detecctcmdCnt/this.detecctTargetcmdCnt;
-			Alert alertLevel=Alert.NONE;
-			if(commandExecuterate>this.ALERT_SEVIRE){
-				alertLevel=Alert.SEVERE;
-			} else if(commandExecuterate>this.ALERT_WARNING){
-				alertLevel=Alert.WARNING;
-			} else if(commandExecuterate>0){
-				alertLevel=Alert.NOTICE;
-			} 
+			int detecctcmdCnt = commands.size();
+			double commandExecuterate = (double) detecctcmdCnt / this.detecctTargetcmdCnt;
+			Alert alertLevel = Alert.NONE;
+			if (commandExecuterate > this.ALERT_SEVIRE) {
+				alertLevel = Alert.SEVERE;
+			} else if (commandExecuterate > this.ALERT_WARNING) {
+				alertLevel = Alert.WARNING;
+			} else if (commandExecuterate > 0) {
+				alertLevel = Alert.NOTICE;
+			}
 			for (EventLogData ev : evS) {
 				ev.setAlertLevel(alertLevel);
+				if(1==ev.isGolden()){
+					this.detectedEventNum++;
+				}
+			}
+			if(1==isGolden && !accountName.isEmpty() && !computer.isEmpty()){
+				infectedNum++;
+				System.out.println("Account: "+accountName+", Computer: "+computer);
 			}
 		}
 	}
@@ -479,22 +509,23 @@ public class AuthLogParser {
 				}
 				if (1 == ev.isGolden()) {
 					target = "outlier";
-				} 
-				/*
-				else if (logTime < this.attackStartTime) {
-					// 攻撃開始前は学習用データとする
+				} else if (0 != attackStartTime) {
+					// 攻撃開始時刻が指定されている
+					if (logTime < attackStartTime) {
+						// 攻撃開始前は学習用データとする
+						target = "train";
+					} else {
+						// 攻撃開始前はテストデータとする
+						target = "test";
+					}
+				} else if (currentTrainNum <= trainNum) {
+					// 攻撃開始時刻が指定されていない場合は、７：３の割合で分ける
 					target = "train";
+					currentTrainNum++;
 				} else {
-					// 攻撃開始前はテストデータとする
 					target = "test";
 				}
-				*/
-				else if (currentTrainNum2 <= trainNum) {
-					target = "train";
-					currentTrainNum2++;
-				} else {
-					target = "test";
-				}
+
 				// UNIX Timeの計算
 				long time = 0;
 				try {
@@ -502,10 +533,10 @@ public class AuthLogParser {
 				} catch (ParseException e) {
 					e.printStackTrace();
 				}
-				pw.println(ev.getDate() + "," + time + "," + ev.getEventID() + "," + accountName + ","
-						+ ev.getClientAddress() + "," + ev.getServiceName() + "," + ev.getProcessName() + ","
-						+ ev.getObjectName() + "," +  ev.getSharedName() + "," + + ev.getTimeCnt() + "," + 
-						target+ "," + ev.getAlertLevel());
+				pw.println(ev.getDate() + "," + ev.getEventID() + "," + accountName + "," + ev.getClientAddress() + ","
+						+ ev.getServiceName() + "," + ev.getProcessName() + "," + ev.getObjectName() + ","
+						+ ev.getSharedName() + "," + target + "," + this.alert.get(ev.getAlertType()) + ","
+						+ ev.getAlertLevel());
 			}
 		}
 
@@ -521,9 +552,9 @@ public class AuthLogParser {
 			for (EventLogData ev : evS) {
 				if (1 == ev.isGolden()) {
 					target = "outlier";
-				} else if (currentTrainNum2 <= trainNum || timeCnt == ev.getTimeCnt()) {
+				} else if (currentTrainNum <= trainNum || timeCnt == ev.getTimeCnt()) {
 					target = "train";
-					currentTrainNum2++;
+					currentTrainNum++;
 				} else {
 					target = "test";
 				}
@@ -562,7 +593,7 @@ public class AuthLogParser {
 				continue;
 			}
 		}
-		outputResults(log, this.outputDirName + "/" + "result.csv");
+		outputResults(log, this.outputDirName + "/" + "eventlog.csv");
 	}
 
 	private void detelePrevFiles(String outDirname) {
@@ -578,8 +609,10 @@ public class AuthLogParser {
 
 	private static void printUseage() {
 		System.out.println("Useage");
-		System.out.println("{iputdirpath} {outputdirpath} {suspicious command list file} ({date when attack starts})");
-		System.out.println("Date shold be specified 'yyyy/MM/dd HH:mm:ss' format.)");
+		System.out.println(
+				"{iputdirpath} {outputdirpath} {suspicious command list file} ({date when attack starts})");
+		System.out.println("If you specity {date when attack starts}, mark logs recoeded after {date when attack starts} as test data. "
+				+ "Date shold be specified 'yyyy/MM/dd HH:mm:ss' format.)");
 	}
 
 	/**
@@ -597,26 +630,50 @@ public class AuthLogParser {
 			while ((line = br.readLine()) != null) {
 				suspiciousCmd.add(line);
 			}
-			this.detecctTargetcmdCnt=this.suspiciousCmd.size();
+			this.detecctTargetcmdCnt = this.suspiciousCmd.size();
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
 
 	}
-	
-	private void outputDetectionRate(){
-		double truePositiveRate=(double)this.detectedNum/this.eventNum;
-		String truePositiveRateS = String.format("%.4f", truePositiveRate);
-		double trueNegativeRate=(double)(this.eventNum-this.detectedNum)/this.eventNum;
-		String trueNegativeRateS = String.format("%.4f", trueNegativeRate);
-		
-		System.out.println("Total amount of events: "+this.eventNum);
-		System.out.println("True Positive counts: "+this.detectedNum);
-		System.out.println("True Negative counts: "+(this.eventNum-this.detectedNum));
+
+	private void setAlert() {
+		this.alert = new HashMap<AlertType, String>();
+		alert.put(AlertType.NoTGT, "No TGT request");
+		alert.put(AlertType.MALCMD, "Malicious Command");
+		alert.put(AlertType.ADMINSHARE, "Administrative Share");
+		alert.put(AlertType.PSEXEC, "Psexec used");
+	}
+
+	private void setClientAddress(LinkedHashSet<EventLogData> evS) {
+		List<EventLogData> list = new ArrayList<EventLogData>(evS);
+		// 時刻の昇順に並べる
+		Collections.reverse(list);
+		String clientAddress = "";
+		for (EventLogData ev : list) {
+			if (ev.getEventID() == EVENT_ST) {
+				clientAddress = ev.getClientAddress();
+			} else if (ev.getEventID() == EVENT_PRIV_SERVICE || ev.getEventID() == EVENT_PRIV_OPE 
+					|| ev.getEventID() == EVENT_PROCESS) {
+				if(!clientAddress.isEmpty()){
+					ev.setClientAddress(clientAddress);
+				}
+			}
+		}
+	}
+
+	private void outputDetectionRate() {
+		System.out.println();
+		System.out.println("Total amount of events: " + this.logCnt);
+		System.out.println("Total amount of accounts & computers: " + this.dataNum);
+		System.out.println("TP(event): " + this.detectedEventNum);
+		System.out.println("TN(event): " + (this.logCnt - this.detectedEventNum));
+		System.out.println("TP(accounts & computers): " + this.infectedNum);
+		System.out.println("TN(accounts & computers): " + (this.dataNum - this.infectedNum));
 	}
 
 	public static void main(String args[]) throws ParseException {
-		AuthLogParser sysmonParser = new AuthLogParser();
+		AuthLogParser authLogParser = new AuthLogParser();
 		String inputdirname = "";
 		String commandFile = "";
 		if (args.length < 3) {
@@ -629,10 +686,11 @@ public class AuthLogParser {
 			attackStartTime = sdf.parse(args[3]).getTime();
 		}
 		log = new LinkedHashMap<String, LinkedHashSet<EventLogData>>();
-		sysmonParser.readSuspiciousCmd(commandFile);
-		sysmonParser.detelePrevFiles(outputDirName);
-		sysmonParser.detectGolden(inputdirname);
-		sysmonParser.outputDetectionRate();
+		authLogParser.setAlert();
+		authLogParser.readSuspiciousCmd(commandFile);
+		authLogParser.detelePrevFiles(outputDirName);
+		authLogParser.detectGolden(inputdirname);
+		authLogParser.outputDetectionRate();
 	}
 
 }

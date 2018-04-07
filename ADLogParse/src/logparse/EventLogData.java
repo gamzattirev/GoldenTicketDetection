@@ -1,6 +1,7 @@
 package logparse;
 
 import logparse.AuthLogParser.Alert;
+import logparse.AuthLogParser.AlertType;
 
 public class EventLogData {
 	
@@ -16,6 +17,7 @@ public class EventLogData {
 	private long timeCnt;
 	private short isGolden=0;
 	private Alert alertLevel;
+	private AlertType alertType;
 	
 	EventLogData(String date, String clientAddress, String accountName, int eventID, int clientPort, String serviceName, 
 			String processName,long timeCnt){
@@ -47,6 +49,9 @@ public class EventLogData {
 	public String getClientAddress(){
 		return this.clientAddress;
 	}
+	public void setClientAddress(String clientAddres){
+		this.clientAddress=clientAddres;
+	}
 	public int getEventID(){
 		return this.eventID;
 	}
@@ -76,6 +81,12 @@ public class EventLogData {
 	}
 	public void setAlertLevel(Alert alertLevel){
 		this.alertLevel=alertLevel;
+	}
+	public AlertType getAlertType(){
+		return this.alertType;
+	}
+	public void setAlertType(AlertType alertType){
+		this.alertType=alertType;
 	}
 	public void setSharedName(String shredName){
 		this.shredName=shredName;
